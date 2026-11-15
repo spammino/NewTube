@@ -43,6 +43,7 @@ import org.schabi.newpipe.database.LocalItem;
 import org.schabi.newpipe.database.playlist.PlaylistStreamEntry;
 import org.schabi.newpipe.database.playlist.model.PlaylistEntity;
 import org.schabi.newpipe.database.stream.model.StreamEntity;
+import org.schabi.newpipe.database.stream.model.StreamStateEntity;
 import org.schabi.newpipe.databinding.DialogEditTextBinding;
 import org.schabi.newpipe.databinding.LocalPlaylistHeaderBinding;
 import org.schabi.newpipe.databinding.PlaylistControlBinding;
@@ -196,7 +197,8 @@ public class LocalPlaylistFragment extends BaseLocalListFragment<List<PlaylistSt
                 if (selectedItem instanceof PlaylistStreamEntry entry) {
                     final StreamEntity item = entry.getStreamEntity();
                     NavigationHelper.openVideoDetailFragment(requireContext(), getFM(),
-                            item.getServiceId(), item.getUrl(), item.getTitle(), null, false);
+                            item.getServiceId(), item.getUrl(), item.getTitle(),
+                            getPlayQueueStartingAt(entry), false);
                 }
             }
 
@@ -450,8 +452,56 @@ public class LocalPlaylistFragment extends BaseLocalListFragment<List<PlaylistSt
         setStreamCountAndOverallDuration(itemListAdapter.getItemsList());
 
         PlayButtonHelper.initPlaylistControlClickListener(activity, playlistControlBinding, this);
+        setupContinueButton(result);
 
         hideLoading();
+    }
+
+    /**
+     * If the playlist has already been started, turns the "Play all" button into a "Continue"
+     * button that resumes from the last watched video, at the position where it was left.
+     * A video counts as watched if it has a saved playback position. If that video was
+     * already finished, playback continues from the next one. If everything has been
+     * watched, the normal "Play all" button is kept.
+     *
+     * @param entries the streams of the playlist, in playlist order
+     */
+    private void setupContinueButton(@NonNull final List<PlaylistStreamEntry> entries) {
+        playlistControlBinding.playlistCtrlPlayAllText.setText(R.string.play_all);
+
+        int lastWatched = -1;
+        for (int i = 0; i < entries.size(); i++) {
+            if (entries.get(i).getProgressMillis() > 0) {
+                lastWatched = i;
+            }
+        }
+        if (lastWatched < 0) {
+            return;
+        }
+
+        final PlaylistStreamEntry last = entries.get(lastWatched);
+        final StreamStateEntity state =
+                new StreamStateEntity(last.getStreamId(), last.getProgressMillis());
+
+        final PlaylistStreamEntry target;
+        final long startPositionMillis;
+        if (state.isFinished(last.getStreamEntity().getDuration())) {
+            if (lastWatched + 1 >= entries.size()) {
+                return; // everything has been watched
+            }
+            target = entries.get(lastWatched + 1);
+            startPositionMillis = 0;
+        } else {
+            target = last;
+            startPositionMillis = last.getProgressMillis();
+        }
+
+        playlistControlBinding.playlistCtrlPlayAllText.setText(R.string.continue_playlist);
+        playlistControlBinding.playlistCtrlPlayAllButton.setOnClickListener(view -> {
+            final PlayQueue queue = getPlayQueueStartingAt(target);
+            queue.setRecovery(queue.getIndex(), startPositionMillis);
+            NavigationHelper.playOnMainPlayer(activity, queue);
+        });
     }
 
     ///////////////////////////////////////////////////////////////////////////
