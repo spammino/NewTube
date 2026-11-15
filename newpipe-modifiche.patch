@@ -1,0 +1,424 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 6e05fc5..39a0e69 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -41,7 +41,7 @@ configure<ApplicationExtension> {
+ 
+     defaultConfig {
+         applicationId = NEWPIPE_APPLICATION_ID_OLD
+-        resValue("string", "app_name", "NewPipe")
++        resValue("string", "app_name", "NewTube")
+         minSdk {
+             version = release(NEWPIPE_VERSION_SDK_MIN)
+         }
+@@ -64,17 +64,17 @@ configure<ApplicationExtension> {
+             // suffix the app id and the app name with git branch name
+             if (normalizedWorkingBranch.isEmpty() || workingBranch in defaultBranches) {
+                 applicationIdSuffix = ".debug"
+-                resValue("string", "app_name", "NewPipe Debug")
++                resValue("string", "app_name", "NewTube")
+             } else {
+                 applicationIdSuffix = ".debug.$normalizedWorkingBranch"
+-                resValue("string", "app_name", "NewPipe $workingBranch")
++                resValue("string", "app_name", "NewTube $workingBranch")
+             }
+         }
+ 
+         release {
+             System.getProperty("packageSuffix")?.let { suffix ->
+                 applicationIdSuffix = suffix
+-                resValue("string", "app_name", "NewPipe $suffix")
++                resValue("string", "app_name", "NewTube $suffix")
+             }
+             isMinifyEnabled = true
+             isShrinkResources = true
+@@ -92,10 +92,10 @@ configure<ApplicationExtension> {
+             // suffix the app id and the app name with git branch name
+             if (normalizedWorkingBranch.isEmpty() || workingBranch in defaultBranches) {
+                 applicationIdSuffix = ".continuous"
+-                resValue("string", "app_name", "NewPipe Continuous")
++                resValue("string", "app_name", "NewTube")
+             } else {
+                 applicationIdSuffix = ".continuous.$normalizedWorkingBranch"
+-                resValue("string", "app_name", "NewPipe $workingBranch")
++                resValue("string", "app_name", "NewTube $workingBranch")
+             }
+         }
+     }
+diff --git a/app/src/main/java/org/schabi/newpipe/MainActivity.java b/app/src/main/java/org/schabi/newpipe/MainActivity.java
+index d810d81..1b91dd9 100644
+--- a/app/src/main/java/org/schabi/newpipe/MainActivity.java
++++ b/app/src/main/java/org/schabi/newpipe/MainActivity.java
+@@ -102,6 +102,7 @@ import java.time.Instant;
+ import java.time.temporal.ChronoUnit;
+ import java.util.ArrayList;
+ import java.util.List;
++import java.util.Locale;
+ import java.util.Objects;
+ 
+ public class MainActivity extends AppCompatActivity {
+@@ -126,7 +127,6 @@ public class MainActivity extends AppCompatActivity {
+     private static final int ITEM_ID_DOWNLOADS = -4;
+     private static final int ITEM_ID_HISTORY = -5;
+     private static final int ITEM_ID_SETTINGS = 0;
+-    private static final int ITEM_ID_DONATION = 1;
+     private static final int ITEM_ID_ABOUT = 2;
+ 
+     private static final int ORDER = 0;
+@@ -299,10 +299,14 @@ public class MainActivity extends AppCompatActivity {
+         int kioskMenuItemId = 0;
+ 
+         for (final String ks : service.getKioskList().getAvailableKiosks()) {
+-            drawerLayoutBinding.navigation.getMenu()
+-                    .add(R.id.menu_kiosks_group, kioskMenuItemId, 0, KioskTranslator
+-                            .getTranslatedKioskName(ks, this))
+-                    .setIcon(KioskTranslator.getKioskIcon(ks));
++            // hide every "trending" kiosk from the drawer, but still advance the id counter
++            // so that kioskSelected() keeps mapping menu ids to the right kiosk
++            if (!ks.toLowerCase(Locale.ROOT).contains("trending")) {
++                drawerLayoutBinding.navigation.getMenu()
++                        .add(R.id.menu_kiosks_group, kioskMenuItemId, 0, KioskTranslator
++                                .getTranslatedKioskName(ks, this))
++                        .setIcon(KioskTranslator.getKioskIcon(ks));
++            }
+             kioskMenuItemId++;
+         }
+ 
+@@ -310,10 +314,6 @@ public class MainActivity extends AppCompatActivity {
+         drawerLayoutBinding.navigation.getMenu()
+                 .add(R.id.menu_options_about_group, ITEM_ID_SETTINGS, ORDER, R.string.settings)
+                 .setIcon(R.drawable.ic_settings);
+-        drawerLayoutBinding.navigation.getMenu()
+-                .add(R.id.menu_options_about_group, ITEM_ID_DONATION, ORDER,
+-                        R.string.donation_title)
+-                .setIcon(R.drawable.volunteer_activism_ic);
+         drawerLayoutBinding.navigation.getMenu()
+                 .add(R.id.menu_options_about_group, ITEM_ID_ABOUT, ORDER, R.string.tab_about)
+                 .setIcon(R.drawable.ic_info_outline);
+@@ -389,9 +389,6 @@ public class MainActivity extends AppCompatActivity {
+             case ITEM_ID_SETTINGS:
+                 NavigationHelper.openSettings(this);
+                 break;
+-            case ITEM_ID_DONATION:
+-                ShareUtils.openUrlInBrowser(this, getString(R.string.donation_url));
+-                break;
+             case ITEM_ID_ABOUT:
+                 NavigationHelper.openAbout(this);
+                 break;
+diff --git a/app/src/main/java/org/schabi/newpipe/fragments/list/BaseListFragment.java b/app/src/main/java/org/schabi/newpipe/fragments/list/BaseListFragment.java
+index 8a117a4..3942ce7 100644
+--- a/app/src/main/java/org/schabi/newpipe/fragments/list/BaseListFragment.java
++++ b/app/src/main/java/org/schabi/newpipe/fragments/list/BaseListFragment.java
+@@ -373,7 +373,7 @@ public abstract class BaseListFragment<I, N> extends BaseStateFragment<I>
+         }
+     }
+ 
+-    private void onStreamSelected(final StreamInfoItem selectedItem) {
++    protected void onStreamSelected(final StreamInfoItem selectedItem) {
+         onItemSelected(selectedItem);
+         NavigationHelper.openVideoDetailFragment(requireContext(), getFM(),
+                 selectedItem.getServiceId(), selectedItem.getUrl(), selectedItem.getName(),
+diff --git a/app/src/main/java/org/schabi/newpipe/fragments/list/playlist/PlaylistFragment.java b/app/src/main/java/org/schabi/newpipe/fragments/list/playlist/PlaylistFragment.java
+index 8a3dfda..941e451 100644
+--- a/app/src/main/java/org/schabi/newpipe/fragments/list/playlist/PlaylistFragment.java
++++ b/app/src/main/java/org/schabi/newpipe/fragments/list/playlist/PlaylistFragment.java
+@@ -28,6 +28,7 @@ import org.schabi.newpipe.NewPipeDatabase;
+ import org.schabi.newpipe.R;
+ import org.schabi.newpipe.database.playlist.model.PlaylistRemoteEntity;
+ import org.schabi.newpipe.database.stream.model.StreamEntity;
++import org.schabi.newpipe.database.stream.model.StreamStateEntity;
+ import org.schabi.newpipe.databinding.PlaylistControlBinding;
+ import org.schabi.newpipe.databinding.PlaylistHeaderBinding;
+ import org.schabi.newpipe.error.ErrorInfo;
+@@ -44,6 +45,7 @@ import org.schabi.newpipe.fragments.list.BaseListInfoFragment;
+ import org.schabi.newpipe.info_list.dialog.InfoItemDialog;
+ import org.schabi.newpipe.info_list.dialog.StreamDialogDefaultEntry;
+ import org.schabi.newpipe.local.dialog.PlaylistDialog;
++import org.schabi.newpipe.local.history.HistoryRecordManager;
+ import org.schabi.newpipe.local.playlist.RemotePlaylistManager;
+ import org.schabi.newpipe.player.playqueue.PlayQueue;
+ import org.schabi.newpipe.player.playqueue.PlaylistPlayQueue;
+@@ -67,10 +69,17 @@ import io.reactivex.rxjava3.core.Flowable;
+ import io.reactivex.rxjava3.core.Single;
+ import io.reactivex.rxjava3.disposables.CompositeDisposable;
+ import io.reactivex.rxjava3.disposables.Disposable;
++import io.reactivex.rxjava3.schedulers.Schedulers;
+ 
+ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, PlaylistInfo>
+         implements PlaylistControlViewHolder {
+ 
++    /**
++     * Maximum number of videos that are loaded automatically (page after page) in order to
++     * find where the "Continue" button should resume from.
++     */
++    private static final int MAX_ITEMS_TO_PRELOAD = 2000;
++
+     private CompositeDisposable disposables;
+     private Subscription bookmarkReactor;
+     private AtomicBoolean isBookmarkButtonReady;
+@@ -147,6 +156,14 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
+         return getPlayQueue(Math.max(infoListAdapter.getItemsList().indexOf(infoItem), 0));
+     }
+ 
++    @Override
++    protected void onStreamSelected(final StreamInfoItem selectedItem) {
++        onItemSelected(selectedItem);
++        NavigationHelper.openVideoDetailFragment(requireContext(), getFM(),
++                selectedItem.getServiceId(), selectedItem.getUrl(), selectedItem.getName(),
++                getPlayQueueStartingAt(selectedItem), false);
++    }
++
+     @Override
+     protected void showInfoItemDialog(final StreamInfoItem item) {
+         final Context context = getContext();
+@@ -277,6 +294,7 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
+     public void handleNextItems(final ListExtractor.InfoItemsPage result) {
+         super.handleNextItems(result);
+         setStreamCountAndOverallDuration(result.getItems(), !result.hasNextPage());
++        loadRemainingPagesThenUpdateContinueButton();
+     }
+ 
+     @Override
+@@ -363,6 +381,107 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
+                 .subscribe(getPlaylistBookmarkSubscriber());
+ 
+         PlayButtonHelper.initPlaylistControlClickListener(activity, playlistControlBinding, this);
++        loadRemainingPagesThenUpdateContinueButton();
++    }
++
++    /**
++     * Loads the next pages one after the other, so that the "Continue" button can look at the
++     * whole playlist, and updates the button once there are no more pages. Auto-generated mixes
++     * (which never end) and very long playlists are not preloaded completely.
++     */
++    private void loadRemainingPagesThenUpdateContinueButton() {
++        if (hasMoreItems()
++                && infoListAdapter.getItemsList().size() < MAX_ITEMS_TO_PRELOAD
++                && !isAutoGeneratedMix()) {
++            if (!isLoading.get()) {
++                loadMoreItems();
++            }
++        } else {
++            updateContinueButton();
++        }
++    }
++
++    private boolean isAutoGeneratedMix() {
++        return currentInfo != null
++                && currentInfo.getServiceId() == ServiceList.YouTube.getServiceId()
++                && (YoutubeParsingHelper.isYoutubeMixId(currentInfo.getId())
++                || YoutubeParsingHelper.isYoutubeMusicMixId(currentInfo.getId()));
++    }
++
++    /**
++     * If some video of this playlist has already been watched, turns the "Play all" button
++     * into a "Continue" button that resumes from the last watched video, at the position where
++     * it was left (or from the next video, if that one was finished). Only the videos loaded
++     * so far are considered, so this is called again every time a new page is loaded.
++     */
++    private void updateContinueButton() {
++        if (disposables == null || playlistControlBinding == null) {
++            return;
++        }
++
++        final List<StreamInfoItem> streams = new ArrayList<>();
++        for (final InfoItem item : infoListAdapter.getItemsList()) {
++            if (item instanceof StreamInfoItem) {
++                streams.add((StreamInfoItem) item);
++            }
++        }
++        if (streams.isEmpty()) {
++            return;
++        }
++
++        final HistoryRecordManager recordManager = new HistoryRecordManager(requireContext());
++        disposables.add(Single.fromCallable(() -> findContinueTarget(recordManager, streams))
++                .subscribeOn(Schedulers.io())
++                .observeOn(AndroidSchedulers.mainThread())
++                .subscribe(target -> {
++                    if (target.index < 0 || playlistControlBinding == null) {
++                        return;
++                    }
++                    playlistControlBinding.playlistCtrlPlayAllText
++                            .setText(R.string.continue_playlist);
++                    playlistControlBinding.playlistCtrlPlayAllButton.setOnClickListener(view -> {
++                        final PlayQueue queue = getPlayQueue(target.index);
++                        queue.setRecovery(target.index, target.positionMillis);
++                        NavigationHelper.playOnMainPlayer(activity, queue);
++                    });
++                }, throwable -> {
++                    // lookup failed: just keep the normal "Play all" button
++                }));
++    }
++
++    private static ContinueTarget findContinueTarget(final HistoryRecordManager recordManager,
++                                                     final List<StreamInfoItem> streams) {
++        int lastWatched = -1;
++        StreamStateEntity lastState = null;
++        for (int i = 0; i < streams.size(); i++) {
++            final StreamStateEntity state =
++                    recordManager.loadStreamState(streams.get(i)).blockingGet();
++            if (state != null && state.getProgressMillis() > 0) {
++                lastWatched = i;
++                lastState = state;
++            }
++        }
++        if (lastWatched < 0) {
++            return new ContinueTarget(-1, 0);
++        }
++
++        if (lastState.isFinished(streams.get(lastWatched).getDuration())) {
++            if (lastWatched + 1 >= streams.size()) {
++                return new ContinueTarget(-1, 0); // everything loaded so far has been watched
++            }
++            return new ContinueTarget(lastWatched + 1, 0);
++        }
++        return new ContinueTarget(lastWatched, lastState.getProgressMillis());
++    }
++
++    private static final class ContinueTarget {
++        private final int index;
++        private final long positionMillis;
++
++        private ContinueTarget(final int index, final long positionMillis) {
++            this.index = index;
++            this.positionMillis = positionMillis;
++        }
+     }
+ 
+     public PlayQueue getPlayQueue() {
+diff --git a/app/src/main/java/org/schabi/newpipe/local/playlist/LocalPlaylistFragment.java b/app/src/main/java/org/schabi/newpipe/local/playlist/LocalPlaylistFragment.java
+index 5047d4b..d5378ad 100644
+--- a/app/src/main/java/org/schabi/newpipe/local/playlist/LocalPlaylistFragment.java
++++ b/app/src/main/java/org/schabi/newpipe/local/playlist/LocalPlaylistFragment.java
+@@ -43,6 +43,7 @@ import org.schabi.newpipe.database.LocalItem;
+ import org.schabi.newpipe.database.playlist.PlaylistStreamEntry;
+ import org.schabi.newpipe.database.playlist.model.PlaylistEntity;
+ import org.schabi.newpipe.database.stream.model.StreamEntity;
++import org.schabi.newpipe.database.stream.model.StreamStateEntity;
+ import org.schabi.newpipe.databinding.DialogEditTextBinding;
+ import org.schabi.newpipe.databinding.LocalPlaylistHeaderBinding;
+ import org.schabi.newpipe.databinding.PlaylistControlBinding;
+@@ -196,7 +197,8 @@ public class LocalPlaylistFragment extends BaseLocalListFragment<List<PlaylistSt
+                 if (selectedItem instanceof PlaylistStreamEntry entry) {
+                     final StreamEntity item = entry.getStreamEntity();
+                     NavigationHelper.openVideoDetailFragment(requireContext(), getFM(),
+-                            item.getServiceId(), item.getUrl(), item.getTitle(), null, false);
++                            item.getServiceId(), item.getUrl(), item.getTitle(),
++                            getPlayQueueStartingAt(entry), false);
+                 }
+             }
+ 
+@@ -450,10 +452,58 @@ public class LocalPlaylistFragment extends BaseLocalListFragment<List<PlaylistSt
+         setStreamCountAndOverallDuration(itemListAdapter.getItemsList());
+ 
+         PlayButtonHelper.initPlaylistControlClickListener(activity, playlistControlBinding, this);
++        setupContinueButton(result);
+ 
+         hideLoading();
+     }
+ 
++    /**
++     * If the playlist has already been started, turns the "Play all" button into a "Continue"
++     * button that resumes from the last watched video, at the position where it was left.
++     * A video counts as watched if it has a saved playback position. If that video was
++     * already finished, playback continues from the next one. If everything has been
++     * watched, the normal "Play all" button is kept.
++     *
++     * @param entries the streams of the playlist, in playlist order
++     */
++    private void setupContinueButton(@NonNull final List<PlaylistStreamEntry> entries) {
++        playlistControlBinding.playlistCtrlPlayAllText.setText(R.string.play_all);
++
++        int lastWatched = -1;
++        for (int i = 0; i < entries.size(); i++) {
++            if (entries.get(i).getProgressMillis() > 0) {
++                lastWatched = i;
++            }
++        }
++        if (lastWatched < 0) {
++            return;
++        }
++
++        final PlaylistStreamEntry last = entries.get(lastWatched);
++        final StreamStateEntity state =
++                new StreamStateEntity(last.getStreamId(), last.getProgressMillis());
++
++        final PlaylistStreamEntry target;
++        final long startPositionMillis;
++        if (state.isFinished(last.getStreamEntity().getDuration())) {
++            if (lastWatched + 1 >= entries.size()) {
++                return; // everything has been watched
++            }
++            target = entries.get(lastWatched + 1);
++            startPositionMillis = 0;
++        } else {
++            target = last;
++            startPositionMillis = last.getProgressMillis();
++        }
++
++        playlistControlBinding.playlistCtrlPlayAllText.setText(R.string.continue_playlist);
++        playlistControlBinding.playlistCtrlPlayAllButton.setOnClickListener(view -> {
++            final PlayQueue queue = getPlayQueueStartingAt(target);
++            queue.setRecovery(queue.getIndex(), startPositionMillis);
++            NavigationHelper.playOnMainPlayer(activity, queue);
++        });
++    }
++
+     ///////////////////////////////////////////////////////////////////////////
+     // Fragment Error Handling
+     ///////////////////////////////////////////////////////////////////////////
+diff --git a/app/src/main/java/org/schabi/newpipe/settings/tabs/TabsJsonHelper.java b/app/src/main/java/org/schabi/newpipe/settings/tabs/TabsJsonHelper.java
+index c42348b..d6cc66e 100644
+--- a/app/src/main/java/org/schabi/newpipe/settings/tabs/TabsJsonHelper.java
++++ b/app/src/main/java/org/schabi/newpipe/settings/tabs/TabsJsonHelper.java
+@@ -20,10 +20,10 @@ public final class TabsJsonHelper {
+     private static final String JSON_TABS_ARRAY_KEY = "tabs";
+ 
+     private static final List<Tab> FALLBACK_INITIAL_TABS_LIST = List.of(
+-            Tab.Type.DEFAULT_KIOSK.getTab(),
+-            Tab.Type.FEED.getTab(),
+             Tab.Type.SUBSCRIPTIONS.getTab(),
+-            Tab.Type.BOOKMARKS.getTab());
++            Tab.Type.FEED.getTab(),
++            Tab.Type.BOOKMARKS.getTab(),
++            Tab.Type.DEFAULT_KIOSK.getTab());
+ 
+     private TabsJsonHelper() { }
+ 
+diff --git a/app/src/main/res/layout/playlist_control.xml b/app/src/main/res/layout/playlist_control.xml
+index 6850820..3b9a034 100644
+--- a/app/src/main/res/layout/playlist_control.xml
++++ b/app/src/main/res/layout/playlist_control.xml
+@@ -46,6 +46,7 @@
+         android:gravity="center">
+ 
+         <org.schabi.newpipe.views.NewPipeTextView
++            android:id="@+id/playlist_ctrl_play_all_text"
+             android:layout_width="wrap_content"
+             android:layout_height="wrap_content"
+             android:drawableStart="@drawable/ic_playlist_play"
+diff --git a/app/src/main/res/values-it/strings.xml b/app/src/main/res/values-it/strings.xml
+index c895436..2f64df3 100644
+--- a/app/src/main/res/values-it/strings.xml
++++ b/app/src/main/res/values-it/strings.xml
+@@ -172,6 +172,7 @@
+     <string name="show_hold_to_append_title">Mostra suggerimento \"Tieni premuto per accodare\"</string>
+     <string name="show_hold_to_append_summary">Nei dettagli dei video, mostra un suggerimento alla pressione dei pulsanti per la riproduzione popup o in sottofondo</string>
+     <string name="play_all">Riproduci tutto</string>
++    <string name="continue_playlist">Continua</string>
+     <string name="player_stream_failure">Impossibile riprodurre questo flusso</string>
+     <string name="player_unrecoverable_failure">Si è verificato un errore irreversibile del lettore multimediale</string>
+     <string name="player_recoverable_failure">Ripristino dell\'errore del lettore multimediale</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 7eff35f..f6ea047 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -190,6 +190,7 @@
+     <string name="undo">Undo</string>
+     <string name="file_deleted">File deleted</string>
+     <string name="play_all">Play All</string>
++    <string name="continue_playlist">Continue</string>
+     <string name="always">Always</string>
+     <string name="just_once">Just Once</string>
+     <string name="file">File</string>
