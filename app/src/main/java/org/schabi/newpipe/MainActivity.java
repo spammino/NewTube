@@ -60,6 +60,7 @@ import androidx.preference.PreferenceManager;
 
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
 
+import org.schabi.newpipe.cast.CastTestDialog;
 import org.schabi.newpipe.databinding.ActivityMainBinding;
 import org.schabi.newpipe.databinding.DrawerHeaderBinding;
 import org.schabi.newpipe.databinding.DrawerLayoutBinding;
@@ -127,6 +128,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int ITEM_ID_DOWNLOADS = -4;
     private static final int ITEM_ID_HISTORY = -5;
     private static final int ITEM_ID_SETTINGS = 0;
+    private static final int ITEM_ID_CAST_TEST = 1;
     private static final int ITEM_ID_ABOUT = 2;
 
     private static final int ORDER = 0;
@@ -315,6 +317,10 @@ public class MainActivity extends AppCompatActivity {
                 .add(R.id.menu_options_about_group, ITEM_ID_SETTINGS, ORDER, R.string.settings)
                 .setIcon(R.drawable.ic_settings);
         drawerLayoutBinding.navigation.getMenu()
+                .add(R.id.menu_options_about_group, ITEM_ID_CAST_TEST, ORDER,
+                        R.string.cast_test_title)
+                .setIcon(R.drawable.ic_cast);
+        drawerLayoutBinding.navigation.getMenu()
                 .add(R.id.menu_options_about_group, ITEM_ID_ABOUT, ORDER, R.string.tab_about)
                 .setIcon(R.drawable.ic_info_outline);
     }
@@ -388,6 +394,9 @@ public class MainActivity extends AppCompatActivity {
         switch (item.getItemId()) {
             case ITEM_ID_SETTINGS:
                 NavigationHelper.openSettings(this);
+                break;
+            case ITEM_ID_CAST_TEST:
+                CastTestDialog.show(this);
                 break;
             case ITEM_ID_ABOUT:
                 NavigationHelper.openAbout(this);

@@ -191,6 +191,10 @@
     <string name="file_deleted">File deleted</string>
     <string name="play_all">Play All</string>
     <string name="continue_playlist">Continue</string>
+    <string name="cast_test_title">Cast test</string>
+    <string name="cast_test_stop">Stop</string>
+    <string name="cast_test_started">Playing on %1$s</string>
+    <string name="cast_test_failed">Cast error: %1$s</string>
     <string name="always">Always</string>
     <string name="just_once">Just Once</string>
     <string name="file">File</string>

@@ -120,6 +120,8 @@ configure<ApplicationExtension> {
 
     androidResources {
         generateLocaleConfig = true
+        // keep only the languages that are actually used
+        localeFilters += listOf("en", "it")
     }
 
     buildFeatures {
