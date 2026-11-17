@@ -1,0 +1,1194 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 39a0e69..b2f13f2 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -120,6 +120,8 @@ configure<ApplicationExtension> {
+ 
+     androidResources {
+         generateLocaleConfig = true
++        // keep only the languages that are actually used
++        localeFilters += listOf("en", "it")
+     }
+ 
+     buildFeatures {
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 7db3439..ecc9b75 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -6,6 +6,9 @@
+     <uses-permission android:name="android.permission.INTERNET" />
+     <uses-permission android:name="android.permission.WAKE_LOCK" />
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
++    <!-- to find the Chromecasts of the local network -->
++    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
++    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+diff --git a/app/src/main/java/org/schabi/newpipe/MainActivity.java b/app/src/main/java/org/schabi/newpipe/MainActivity.java
+index 1b91dd9..8031436 100644
+--- a/app/src/main/java/org/schabi/newpipe/MainActivity.java
++++ b/app/src/main/java/org/schabi/newpipe/MainActivity.java
+@@ -60,6 +60,7 @@ import androidx.preference.PreferenceManager;
+ 
+ import com.google.android.material.bottomsheet.BottomSheetBehavior;
+ 
++import org.schabi.newpipe.cast.CastTestDialog;
+ import org.schabi.newpipe.databinding.ActivityMainBinding;
+ import org.schabi.newpipe.databinding.DrawerHeaderBinding;
+ import org.schabi.newpipe.databinding.DrawerLayoutBinding;
+@@ -127,6 +128,7 @@ public class MainActivity extends AppCompatActivity {
+     private static final int ITEM_ID_DOWNLOADS = -4;
+     private static final int ITEM_ID_HISTORY = -5;
+     private static final int ITEM_ID_SETTINGS = 0;
++    private static final int ITEM_ID_CAST_TEST = 1;
+     private static final int ITEM_ID_ABOUT = 2;
+ 
+     private static final int ORDER = 0;
+@@ -314,6 +316,10 @@ public class MainActivity extends AppCompatActivity {
+         drawerLayoutBinding.navigation.getMenu()
+                 .add(R.id.menu_options_about_group, ITEM_ID_SETTINGS, ORDER, R.string.settings)
+                 .setIcon(R.drawable.ic_settings);
++        drawerLayoutBinding.navigation.getMenu()
++                .add(R.id.menu_options_about_group, ITEM_ID_CAST_TEST, ORDER,
++                        R.string.cast_test_title)
++                .setIcon(R.drawable.ic_cast);
+         drawerLayoutBinding.navigation.getMenu()
+                 .add(R.id.menu_options_about_group, ITEM_ID_ABOUT, ORDER, R.string.tab_about)
+                 .setIcon(R.drawable.ic_info_outline);
+@@ -389,6 +395,9 @@ public class MainActivity extends AppCompatActivity {
+             case ITEM_ID_SETTINGS:
+                 NavigationHelper.openSettings(this);
+                 break;
++            case ITEM_ID_CAST_TEST:
++                CastTestDialog.show(this);
++                break;
+             case ITEM_ID_ABOUT:
+                 NavigationHelper.openAbout(this);
+                 break;
+diff --git a/app/src/main/java/org/schabi/newpipe/cast/CastClient.java b/app/src/main/java/org/schabi/newpipe/cast/CastClient.java
+new file mode 100644
+index 0000000..f00f2ba
+--- /dev/null
++++ b/app/src/main/java/org/schabi/newpipe/cast/CastClient.java
+@@ -0,0 +1,392 @@
++package org.schabi.newpipe.cast;
++
++import org.json.JSONArray;
++import org.json.JSONException;
++import org.json.JSONObject;
++
++import java.io.Closeable;
++import java.io.IOException;
++import java.util.Map;
++import java.util.concurrent.ArrayBlockingQueue;
++import java.util.concurrent.BlockingQueue;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicInteger;
++
++/**
++ * Plays a media URL on a Chromecast using Google's "Default Media Receiver", which only needs
++ * the address of the video (or of a DASH/HLS manifest) and fetches it by itself.
++ * <p>
++ * All the methods block until the Chromecast answers, so they must not be called on the main
++ * thread. {@link Listener} callbacks come from the connection's reader thread.
++ * </p>
++ */
++public final class CastClient implements Closeable {
++
++    /** The id of Google's Default Media Receiver, which exists on every Chromecast. */
++    private static final String DEFAULT_MEDIA_RECEIVER_ID = "CC1AD845";
++
++    private static final long REQUEST_TIMEOUT_MS = 10_000;
++    private static final long LAUNCH_TIMEOUT_MS = 20_000;
++    private static final long LOAD_TIMEOUT_MS = 30_000;
++
++    private static final String TYPE_CONNECTION_CLOSED = "CONNECTION_CLOSED";
++
++    /** What the receiver says about the media that is currently loaded. */
++    public static final class MediaStatus {
++        public final int mediaSessionId;
++        /** IDLE, BUFFERING, PLAYING or PAUSED. */
++        public final String playerState;
++        /** Playback position in seconds. */
++        public final double currentTime;
++        /** Duration in seconds, or -1 if unknown. */
++        public final double duration;
++        /** FINISHED, CANCELLED, INTERRUPTED or ERROR when {@code playerState} is IDLE. */
++        public final String idleReason;
++
++        MediaStatus(final int mediaSessionId, final String playerState, final double currentTime,
++                    final double duration, final String idleReason) {
++            this.mediaSessionId = mediaSessionId;
++            this.playerState = playerState;
++            this.currentTime = currentTime;
++            this.duration = duration;
++            this.idleReason = idleReason;
++        }
++
++        @Override
++        public String toString() {
++            return playerState + " @" + currentTime + "s"
++                    + (idleReason.isEmpty() ? "" : " (" + idleReason + ")");
++        }
++    }
++
++    public interface Listener {
++        /** Called on the reader thread whenever the Chromecast reports a playback change. */
++        void onMediaStatus(MediaStatus status);
++
++        /** Called once when the connection ends; {@code reason} is null if closed locally. */
++        void onClosed(IOException reason);
++    }
++
++    private final Listener listener;
++    private final AtomicInteger requestIds = new AtomicInteger(0);
++    private final Map<Integer, BlockingQueue<JSONObject>> pending = new ConcurrentHashMap<>();
++    private final Object applicationLock = new Object();
++
++    private volatile CastConnection connection;
++    private volatile boolean closed;
++    private volatile int mediaSessionId = -1;
++    // guarded by applicationLock
++    private String transportId;
++    private String sessionId;
++
++    private CastClient(final Listener listener) {
++        this.listener = listener;
++    }
++
++    /** Connects to a Chromecast. The address must be one of the local network. */
++    public static CastClient connect(final String host, final int port, final Listener listener)
++            throws IOException {
++        final CastClient client = new CastClient(listener);
++        client.connection = CastConnection.open(host, port, new CastConnection.Listener() {
++            @Override
++            public void onMessage(final CastMessage message) {
++                client.handleMessage(message);
++            }
++
++            @Override
++            public void onClosed(final IOException reason) {
++                client.handleClosed(reason);
++            }
++        });
++        try {
++            // opens the "virtual connection" with the Chromecast itself
++            client.connection.send(CastConnection.SENDER_ID, CastConnection.PLATFORM_ID,
++                    CastConnection.NS_CONNECTION, json("type", "CONNECT"));
++        } catch (final IOException e) {
++            client.close();
++            throw e;
++        }
++        return client;
++    }
++
++    /** Starts the Default Media Receiver and connects to it. */
++    public void launchDefaultReceiver() throws IOException {
++        request(CastConnection.PLATFORM_ID, CastConnection.NS_RECEIVER,
++                json("type", "LAUNCH", "appId", DEFAULT_MEDIA_RECEIVER_ID), REQUEST_TIMEOUT_MS);
++
++        final String transport;
++        synchronized (applicationLock) {
++            final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(
++                    LAUNCH_TIMEOUT_MS);
++            while (transportId == null) {
++                final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
++                if (remainingMs <= 0 || closed) {
++                    throw new IOException("The Chromecast did not start the media receiver");
++                }
++                try {
++                    applicationLock.wait(Math.min(remainingMs, 500));
++                } catch (final InterruptedException e) {
++                    Thread.currentThread().interrupt();
++                    throw new IOException("Interrupted", e);
++                }
++            }
++            transport = transportId;
++        }
++        connection.send(CastConnection.SENDER_ID, transport, CastConnection.NS_CONNECTION,
++                json("type", "CONNECT"));
++    }
++
++    /**
++     * Starts playing a video.
++     *
++     * @param url          address of the video or of a DASH/HLS manifest, reachable by the
++     *                     Chromecast
++     * @param contentType  e.g. "video/mp4" or "application/dash+xml"
++     * @param autoplay     whether to start playing as soon as it is loaded
++     * @param startSeconds where to start from
++     * @return the first status reported by the Chromecast, or {@code null} if it reported none
++     */
++    public MediaStatus load(final String url, final String contentType, final boolean autoplay,
++                            final double startSeconds) throws IOException {
++        final String transport;
++        final String session;
++        synchronized (applicationLock) {
++            transport = transportId;
++            session = sessionId;
++        }
++        if (transport == null) {
++            throw new IOException("The media receiver is not running");
++        }
++        final JSONObject payload = json("type", "LOAD", "sessionId", session,
++                "autoplay", autoplay, "currentTime", startSeconds,
++                "media", json("contentId", url, "contentType", contentType,
++                        "streamType", "BUFFERED"));
++        final JSONObject response =
++                request(transport, CastConnection.NS_MEDIA, payload, LOAD_TIMEOUT_MS);
++        return parseMediaStatus(response);
++    }
++
++    public void play() throws IOException {
++        mediaRequest("PLAY", null);
++    }
++
++    public void pause() throws IOException {
++        mediaRequest("PAUSE", null);
++    }
++
++    public void seek(final double seconds) throws IOException {
++        mediaRequest("SEEK", seconds);
++    }
++
++    /** Stops the playback of the current media (the receiver stays open). */
++    public void stop() throws IOException {
++        mediaRequest("STOP", null);
++    }
++
++    /** Sets the volume of the Chromecast, from 0.0 to 1.0. */
++    public void setVolume(final double level) throws IOException {
++        request(CastConnection.PLATFORM_ID, CastConnection.NS_RECEIVER,
++                json("type", "SET_VOLUME", "volume", json("level", level)), REQUEST_TIMEOUT_MS);
++    }
++
++    /** Closes the receiver on the Chromecast, which goes back to its home screen. */
++    public void stopReceiver() {
++        final String session;
++        synchronized (applicationLock) {
++            session = sessionId;
++        }
++        if (session == null || connection == null) {
++            return;
++        }
++        try {
++            connection.send(CastConnection.SENDER_ID, CastConnection.PLATFORM_ID,
++                    CastConnection.NS_RECEIVER,
++                    json("type", "STOP", "sessionId", session,
++                            "requestId", requestIds.incrementAndGet()));
++        } catch (final IOException ignored) {
++            // the connection is gone anyway
++        }
++    }
++
++    @Override
++    public void close() {
++        final CastConnection current = connection;
++        if (current != null) {
++            current.close();
++        }
++    }
++
++    // ------------------------------------------------------------------------------------------
++
++    private void mediaRequest(final String type, final Double seconds) throws IOException {
++        final String transport;
++        synchronized (applicationLock) {
++            transport = transportId;
++        }
++        final int mediaSession = mediaSessionId;
++        if (transport == null || mediaSession < 0) {
++            throw new IOException("Nothing is loaded on the Chromecast");
++        }
++        final JSONObject payload = json("type", type, "mediaSessionId", mediaSession);
++        if (seconds != null) {
++            put(payload, "currentTime", seconds);
++        }
++        request(transport, CastConnection.NS_MEDIA, payload, REQUEST_TIMEOUT_MS);
++    }
++
++    /** Sends a request and waits for the answer that has the same request id. */
++    private JSONObject request(final String destinationId, final String namespace,
++                               final JSONObject payload, final long timeoutMs)
++            throws IOException {
++        final int id = requestIds.incrementAndGet();
++        final BlockingQueue<JSONObject> answer = new ArrayBlockingQueue<>(1);
++        pending.put(id, answer);
++        try {
++            put(payload, "requestId", id);
++            connection.send(CastConnection.SENDER_ID, destinationId, namespace, payload);
++            final JSONObject response = answer.poll(timeoutMs, TimeUnit.MILLISECONDS);
++            if (response == null) {
++                throw new IOException("No answer from the Chromecast to "
++                        + payload.optString("type"));
++            }
++            throwIfError(response);
++            return response;
++        } catch (final InterruptedException e) {
++            Thread.currentThread().interrupt();
++            throw new IOException("Interrupted", e);
++        } finally {
++            pending.remove(id);
++        }
++    }
++
++    private static void throwIfError(final JSONObject response) throws IOException {
++        final String type = response.optString("type");
++        switch (type) {
++            case "LOAD_FAILED":
++            case "LOAD_CANCELLED":
++            case "INVALID_REQUEST":
++            case "INVALID_PLAYER_STATE":
++            case "LAUNCH_ERROR":
++            case "ERROR":
++            case TYPE_CONNECTION_CLOSED:
++                final String reason = response.optString("reason");
++                throw new IOException(type + (reason.isEmpty() ? "" : ": " + reason));
++            default:
++                break;
++        }
++    }
++
++    private void handleMessage(final CastMessage message) {
++        final JSONObject json;
++        try {
++            json = new JSONObject(message.payload);
++        } catch (final JSONException e) {
++            return;
++        }
++
++        final String type = json.optString("type");
++        if (CastConnection.NS_RECEIVER.equals(message.namespace)
++                && "RECEIVER_STATUS".equals(type)) {
++            updateApplication(json);
++        } else if (CastConnection.NS_MEDIA.equals(message.namespace)
++                && "MEDIA_STATUS".equals(type)) {
++            final MediaStatus status = parseMediaStatus(json);
++            if (status != null) {
++                mediaSessionId = status.mediaSessionId;
++                listener.onMediaStatus(status);
++            }
++        } else if ("CLOSE".equals(type) && message.namespace.equals(
++                CastConnection.NS_CONNECTION)) {
++            // the receiver app was closed (e.g. someone cast something else)
++            synchronized (applicationLock) {
++                transportId = null;
++                sessionId = null;
++            }
++            mediaSessionId = -1;
++        }
++
++        final int requestId = json.optInt("requestId", 0);
++        if (requestId != 0) {
++            final BlockingQueue<JSONObject> answer = pending.get(requestId);
++            if (answer != null) {
++                answer.offer(json);
++            }
++        }
++    }
++
++    private void updateApplication(final JSONObject receiverStatus) {
++        final JSONObject status = receiverStatus.optJSONObject("status");
++        final JSONArray applications =
++                status == null ? null : status.optJSONArray("applications");
++
++        String newTransport = null;
++        String newSession = null;
++        if (applications != null) {
++            for (int i = 0; i < applications.length(); i++) {
++                final JSONObject app = applications.optJSONObject(i);
++                if (app != null
++                        && DEFAULT_MEDIA_RECEIVER_ID.equals(app.optString("appId"))
++                        && !app.optString("transportId").isEmpty()) {
++                    newTransport = app.optString("transportId");
++                    newSession = app.optString("sessionId");
++                    break;
++                }
++            }
++        }
++
++        synchronized (applicationLock) {
++            transportId = newTransport;
++            sessionId = newSession;
++            applicationLock.notifyAll();
++        }
++        if (newTransport == null) {
++            mediaSessionId = -1;
++        }
++    }
++
++    private static MediaStatus parseMediaStatus(final JSONObject json) {
++        final JSONArray statuses = json.optJSONArray("status");
++        final JSONObject status = statuses == null ? null : statuses.optJSONObject(0);
++        if (status == null) {
++            return null;
++        }
++        final JSONObject media = status.optJSONObject("media");
++        return new MediaStatus(
++                status.optInt("mediaSessionId", -1),
++                status.optString("playerState"),
++                status.optDouble("currentTime", 0),
++                media == null ? -1 : media.optDouble("duration", -1),
++                status.optString("idleReason"));
++    }
++
++    private void handleClosed(final IOException reason) {
++        closed = true;
++        // wake up everyone who is waiting for an answer
++        for (final BlockingQueue<JSONObject> answer : pending.values()) {
++            answer.offer(json("type", TYPE_CONNECTION_CLOSED, "reason",
++                    reason == null ? "closed" : String.valueOf(reason.getMessage())));
++        }
++        synchronized (applicationLock) {
++            applicationLock.notifyAll();
++        }
++        listener.onClosed(reason);
++    }
++
++    /** Builds a JSON object from alternating keys and values. */
++    private static JSONObject json(final Object... keysAndValues) {
++        final JSONObject object = new JSONObject();
++        for (int i = 0; i < keysAndValues.length; i += 2) {
++            put(object, (String) keysAndValues[i], keysAndValues[i + 1]);
++        }
++        return object;
++    }
++
++    private static void put(final JSONObject object, final String key, final Object value) {
++        try {
++            object.put(key, value);
++        } catch (final JSONException e) {
++            throw new IllegalArgumentException(e);
++        }
++    }
++}
+diff --git a/app/src/main/java/org/schabi/newpipe/cast/CastConnection.java b/app/src/main/java/org/schabi/newpipe/cast/CastConnection.java
+new file mode 100644
+index 0000000..eb2e988
+--- /dev/null
++++ b/app/src/main/java/org/schabi/newpipe/cast/CastConnection.java
+@@ -0,0 +1,246 @@
++package org.schabi.newpipe.cast;
++
++import org.json.JSONException;
++import org.json.JSONObject;
++
++import java.io.BufferedInputStream;
++import java.io.BufferedOutputStream;
++import java.io.Closeable;
++import java.io.DataInputStream;
++import java.io.DataOutputStream;
++import java.io.IOException;
++import java.net.InetAddress;
++import java.net.InetSocketAddress;
++import java.net.Socket;
++import java.security.GeneralSecurityException;
++import java.security.cert.X509Certificate;
++import java.util.concurrent.Executors;
++import java.util.concurrent.ScheduledExecutorService;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicBoolean;
++
++import javax.net.ssl.SSLContext;
++import javax.net.ssl.SSLSocket;
++import javax.net.ssl.TrustManager;
++import javax.net.ssl.X509TrustManager;
++
++/**
++ * A TLS connection to a Chromecast on the local network, speaking the Cast v2 wire protocol:
++ * each message is a 4-byte big-endian length followed by a protobuf {@link CastMessage}.
++ * <p>
++ * It only talks to the device on the local network: no Google server and no account is involved.
++ * The heartbeat (PING/PONG) is handled here; every other message is passed to the
++ * {@link Listener}, on the reader thread.
++ * </p>
++ */
++final class CastConnection implements Closeable {
++
++    static final int DEFAULT_PORT = 8009;
++    static final String SENDER_ID = "sender-0";
++    static final String PLATFORM_ID = "receiver-0";
++    static final String NS_CONNECTION = "urn:x-cast:com.google.cast.tp.connection";
++    static final String NS_HEARTBEAT = "urn:x-cast:com.google.cast.tp.heartbeat";
++    static final String NS_RECEIVER = "urn:x-cast:com.google.cast.receiver";
++    static final String NS_MEDIA = "urn:x-cast:com.google.cast.media";
++
++    private static final int CONNECT_TIMEOUT_MS = 5000;
++    private static final long PING_PERIOD_MS = 5000;
++    private static final long SILENCE_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(15);
++    private static final int MAX_MESSAGE_SIZE = 1 << 20;
++
++    interface Listener {
++        /** A non-heartbeat message arrived. Called on the reader thread. */
++        void onMessage(CastMessage message);
++
++        /**
++         * The connection ended. Called once.
++         *
++         * @param reason why it ended, or {@code null} if it was closed locally
++         */
++        void onClosed(IOException reason);
++    }
++
++    private final Listener listener;
++    private final SSLSocket socket;
++    private final DataInputStream in;
++    private final DataOutputStream out;
++    private final ScheduledExecutorService heartbeat;
++    private final AtomicBoolean closed = new AtomicBoolean(false);
++    private volatile long lastReceivedNanos = System.nanoTime();
++
++    private CastConnection(final SSLSocket socket, final Listener listener) throws IOException {
++        this.socket = socket;
++        this.listener = listener;
++        this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
++        this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
++        this.heartbeat = Executors.newSingleThreadScheduledExecutor(runnable -> {
++            final Thread thread = new Thread(runnable, "cast-heartbeat");
++            thread.setDaemon(true);
++            return thread;
++        });
++    }
++
++    /**
++     * Opens a connection. Blocks, so it must not be called on the main thread.
++     * Only addresses of the local network are accepted.
++     */
++    static CastConnection open(final String host, final int port, final Listener listener)
++            throws IOException {
++        final InetAddress address = InetAddress.getByName(host);
++        if (!isLocalAddress(address)) {
++            throw new IOException("Refusing to connect to a non-local address: " + host);
++        }
++
++        final Socket plain = new Socket();
++        final SSLSocket ssl;
++        try {
++            plain.connect(new InetSocketAddress(address, port), CONNECT_TIMEOUT_MS);
++            ssl = (SSLSocket) createTrustAllContext().getSocketFactory()
++                    .createSocket(plain, host, port, true);
++            ssl.setSoTimeout(CONNECT_TIMEOUT_MS); // only for the handshake
++            ssl.startHandshake();
++            ssl.setSoTimeout(0); // afterwards the heartbeat watches for silence
++        } catch (final IOException | GeneralSecurityException e) {
++            plain.close();
++            throw e instanceof IOException ? (IOException) e : new IOException(e);
++        }
++
++        final CastConnection connection = new CastConnection(ssl, listener);
++        connection.start();
++        return connection;
++    }
++
++    private void start() {
++        final Thread reader = new Thread(this::readLoop, "cast-reader");
++        reader.setDaemon(true);
++        reader.start();
++        // the first PING comes after the caller had the chance to send its CONNECT message
++        heartbeat.scheduleAtFixedRate(this::heartbeatTick, PING_PERIOD_MS, PING_PERIOD_MS,
++                TimeUnit.MILLISECONDS);
++    }
++
++    /** Sends a message with a JSON payload. */
++    void send(final String sourceId, final String destinationId, final String namespace,
++              final JSONObject payload) throws IOException {
++        final byte[] data =
++                new CastMessage(sourceId, destinationId, namespace, payload.toString()).encode();
++        synchronized (out) {
++            if (closed.get()) {
++                throw new IOException("Connection closed");
++            }
++            out.writeInt(data.length);
++            out.write(data);
++            out.flush();
++        }
++    }
++
++    @Override
++    public void close() {
++        shutdown(null);
++    }
++
++    private void heartbeatTick() {
++        if (System.nanoTime() - lastReceivedNanos > SILENCE_TIMEOUT_NANOS) {
++            shutdown(new IOException("The Chromecast stopped responding"));
++            return;
++        }
++        try {
++            send(SENDER_ID, PLATFORM_ID, NS_HEARTBEAT, json("PING"));
++        } catch (final IOException e) {
++            shutdown(e);
++        }
++    }
++
++    private void readLoop() {
++        IOException reason = null;
++        try {
++            while (!closed.get()) {
++                final int length = in.readInt();
++                if (length <= 0 || length > MAX_MESSAGE_SIZE) {
++                    throw new IOException("Invalid Cast message length: " + length);
++                }
++                final byte[] data = new byte[length];
++                in.readFully(data);
++                lastReceivedNanos = System.nanoTime();
++                handle(CastMessage.decode(data));
++            }
++        } catch (final IOException e) {
++            reason = e;
++        }
++        shutdown(reason);
++    }
++
++    private void handle(final CastMessage message) throws IOException {
++        if (message.payload == null) {
++            return; // binary messages are not used by the media receiver
++        }
++        if (NS_HEARTBEAT.equals(message.namespace)) {
++            try {
++                if ("PING".equals(new JSONObject(message.payload).optString("type"))) {
++                    send(message.destinationId, message.sourceId, NS_HEARTBEAT, json("PONG"));
++                }
++            } catch (final JSONException ignored) {
++                // malformed heartbeat: nothing to answer
++            }
++            return;
++        }
++        listener.onMessage(message);
++    }
++
++    private void shutdown(final IOException reason) {
++        if (!closed.compareAndSet(false, true)) {
++            return;
++        }
++        heartbeat.shutdownNow();
++        try {
++            socket.close();
++        } catch (final IOException ignored) {
++            // already closing
++        }
++        listener.onClosed(reason);
++    }
++
++    private static JSONObject json(final String type) {
++        try {
++            return new JSONObject().put("type", type);
++        } catch (final JSONException e) {
++            throw new IllegalStateException(e);
++        }
++    }
++
++    /** Loopback, private (192.168.x.x, 10.x.x.x, 172.16-31.x.x) and link-local addresses. */
++    static boolean isLocalAddress(final InetAddress address) {
++        if (address.isLoopbackAddress() || address.isSiteLocalAddress()
++                || address.isLinkLocalAddress()) {
++            return true;
++        }
++        final byte[] bytes = address.getAddress();
++        // IPv6 unique local addresses (fc00::/7)
++        return bytes.length == 16 && (bytes[0] & 0xFE) == 0xFC;
++    }
++
++    /**
++     * The Chromecast presents a self-signed device certificate, which cannot be checked like the
++     * one of a website. This is why the connection is restricted to local addresses (see
++     * {@link #isLocalAddress}) and why nothing sensitive is ever sent over it.
++     */
++    private static SSLContext createTrustAllContext() throws GeneralSecurityException {
++        final TrustManager trustAll = new X509TrustManager() {
++            @Override
++            public void checkClientTrusted(final X509Certificate[] chain, final String authType) {
++            }
++
++            @Override
++            public void checkServerTrusted(final X509Certificate[] chain, final String authType) {
++            }
++
++            @Override
++            public X509Certificate[] getAcceptedIssuers() {
++                return new X509Certificate[0];
++            }
++        };
++        final SSLContext context = SSLContext.getInstance("TLS");
++        context.init(null, new TrustManager[] {trustAll}, null);
++        return context;
++    }
++}
+diff --git a/app/src/main/java/org/schabi/newpipe/cast/CastDiscovery.java b/app/src/main/java/org/schabi/newpipe/cast/CastDiscovery.java
+new file mode 100644
+index 0000000..c6a9079
+--- /dev/null
++++ b/app/src/main/java/org/schabi/newpipe/cast/CastDiscovery.java
+@@ -0,0 +1,169 @@
++package org.schabi.newpipe.cast;
++
++import android.content.Context;
++import android.net.nsd.NsdManager;
++import android.net.nsd.NsdServiceInfo;
++import android.os.Handler;
++import android.os.Looper;
++
++import java.net.InetAddress;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayDeque;
++import java.util.ArrayList;
++import java.util.Deque;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++
++/**
++ * Finds the Chromecasts of the local network with Android's own service discovery
++ * ({@link NsdManager}, mDNS). It does not use the Google Play Services nor any library.
++ * <p>
++ * All the callbacks are delivered on the main thread.
++ * </p>
++ */
++public final class CastDiscovery {
++
++    private static final String SERVICE_TYPE = "_googlecast._tcp.";
++    /** The key of the DNS-SD text record that holds the name chosen by the owner. */
++    private static final String ATTRIBUTE_FRIENDLY_NAME = "fn";
++
++    public static final class Device {
++        public final String id;
++        public final String name;
++        public final String host;
++        public final int port;
++
++        Device(final String id, final String name, final String host, final int port) {
++            this.id = id;
++            this.name = name;
++            this.host = host;
++            this.port = port;
++        }
++    }
++
++    public interface Listener {
++        /** The list of the devices found so far changed. */
++        void onDevicesChanged(List<Device> devices);
++    }
++
++    private final NsdManager nsdManager;
++    private final Listener listener;
++    private final Handler mainHandler = new Handler(Looper.getMainLooper());
++    private final Map<String, Device> devices = new LinkedHashMap<>();
++    // NsdManager can resolve only one service at a time on many Android versions
++    private final Deque<NsdServiceInfo> resolveQueue = new ArrayDeque<>();
++    private boolean resolving = false;
++    private boolean started = false;
++    private NsdManager.DiscoveryListener discoveryListener;
++
++    public CastDiscovery(final Context context, final Listener listener) {
++        this.nsdManager = (NsdManager) context.getApplicationContext()
++                .getSystemService(Context.NSD_SERVICE);
++        this.listener = listener;
++    }
++
++    /** Starts looking for devices. Call {@link #stop()} when done. */
++    public void start() {
++        if (started) {
++            return;
++        }
++        started = true;
++        discoveryListener = new NsdManager.DiscoveryListener() {
++            @Override
++            public void onDiscoveryStarted(final String serviceType) {
++            }
++
++            @Override
++            public void onDiscoveryStopped(final String serviceType) {
++            }
++
++            @Override
++            public void onStartDiscoveryFailed(final String serviceType, final int errorCode) {
++                mainHandler.post(() -> started = false);
++            }
++
++            @Override
++            public void onStopDiscoveryFailed(final String serviceType, final int errorCode) {
++            }
++
++            @Override
++            public void onServiceFound(final NsdServiceInfo serviceInfo) {
++                mainHandler.post(() -> {
++                    if (started) {
++                        resolveQueue.add(serviceInfo);
++                        resolveNext();
++                    }
++                });
++            }
++
++            @Override
++            public void onServiceLost(final NsdServiceInfo serviceInfo) {
++                mainHandler.post(() -> {
++                    if (devices.remove(serviceInfo.getServiceName()) != null) {
++                        notifyChanged();
++                    }
++                });
++            }
++        };
++        nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener);
++    }
++
++    public void stop() {
++        if (!started) {
++            return;
++        }
++        started = false;
++        resolveQueue.clear();
++        try {
++            nsdManager.stopServiceDiscovery(discoveryListener);
++        } catch (final IllegalArgumentException ignored) {
++            // discovery was not running
++        }
++    }
++
++    @SuppressWarnings("deprecation") // the replacement needs a newer Android version
++    private void resolveNext() {
++        if (resolving || resolveQueue.isEmpty()) {
++            return;
++        }
++        resolving = true;
++        nsdManager.resolveService(resolveQueue.poll(), new NsdManager.ResolveListener() {
++            @Override
++            public void onResolveFailed(final NsdServiceInfo serviceInfo, final int errorCode) {
++                mainHandler.post(() -> {
++                    resolving = false;
++                    resolveNext();
++                });
++            }
++
++            @Override
++            public void onServiceResolved(final NsdServiceInfo serviceInfo) {
++                mainHandler.post(() -> {
++                    resolving = false;
++                    addDevice(serviceInfo);
++                    resolveNext();
++                });
++            }
++        });
++    }
++
++    private void addDevice(final NsdServiceInfo info) {
++        final InetAddress address = info.getHost();
++        if (!started || address == null) {
++            return;
++        }
++        String name = info.getServiceName();
++        final byte[] friendlyName = info.getAttributes().get(ATTRIBUTE_FRIENDLY_NAME);
++        if (friendlyName != null && friendlyName.length > 0) {
++            name = new String(friendlyName, StandardCharsets.UTF_8);
++        }
++        devices.put(info.getServiceName(), new Device(info.getServiceName(), name,
++                address.getHostAddress(), info.getPort()));
++        notifyChanged();
++    }
++
++    private void notifyChanged() {
++        listener.onDevicesChanged(new ArrayList<>(devices.values()));
++    }
++}
+diff --git a/app/src/main/java/org/schabi/newpipe/cast/CastMessage.java b/app/src/main/java/org/schabi/newpipe/cast/CastMessage.java
+new file mode 100644
+index 0000000..3c4d6bc
+--- /dev/null
++++ b/app/src/main/java/org/schabi/newpipe/cast/CastMessage.java
+@@ -0,0 +1,160 @@
++package org.schabi.newpipe.cast;
++
++import java.io.ByteArrayOutputStream;
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++
++/**
++ * A message of the Cast v2 protocol ({@code CastMessage} in Chromium's cast_channel.proto).
++ * <p>
++ * Only text payloads are supported. The (tiny) protobuf wire format is written by hand, so that
++ * no protobuf library is needed.
++ * </p>
++ */
++final class CastMessage {
++
++    // protobuf field tags: (field number << 3) | wire type
++    private static final int TAG_PROTOCOL_VERSION = 0x08;
++    private static final int TAG_SOURCE_ID = 0x12;
++    private static final int TAG_DESTINATION_ID = 0x1a;
++    private static final int TAG_NAMESPACE = 0x22;
++    private static final int TAG_PAYLOAD_TYPE = 0x28;
++    private static final int TAG_PAYLOAD_UTF8 = 0x32;
++
++    private static final int FIELD_PROTOCOL_VERSION = 1;
++    private static final int FIELD_SOURCE_ID = 2;
++    private static final int FIELD_DESTINATION_ID = 3;
++    private static final int FIELD_NAMESPACE = 4;
++    private static final int FIELD_PAYLOAD_UTF8 = 6;
++
++    private static final int WIRE_VARINT = 0;
++    private static final int WIRE_FIXED64 = 1;
++    private static final int WIRE_LENGTH_DELIMITED = 2;
++    private static final int WIRE_FIXED32 = 5;
++
++    final String sourceId;
++    final String destinationId;
++    final String namespace;
++    /** The text payload, or {@code null} for messages with a binary payload. */
++    final String payload;
++
++    CastMessage(final String sourceId, final String destinationId, final String namespace,
++                final String payload) {
++        this.sourceId = sourceId;
++        this.destinationId = destinationId;
++        this.namespace = namespace;
++        this.payload = payload;
++    }
++
++    byte[] encode() {
++        final ByteArrayOutputStream out = new ByteArrayOutputStream();
++        writeVarintField(out, TAG_PROTOCOL_VERSION, 0); // CASTV2_1_0
++        writeStringField(out, TAG_SOURCE_ID, sourceId);
++        writeStringField(out, TAG_DESTINATION_ID, destinationId);
++        writeStringField(out, TAG_NAMESPACE, namespace);
++        writeVarintField(out, TAG_PAYLOAD_TYPE, 0); // STRING
++        writeStringField(out, TAG_PAYLOAD_UTF8, payload);
++        return out.toByteArray();
++    }
++
++    static CastMessage decode(final byte[] data) throws IOException {
++        String sourceId = null;
++        String destinationId = null;
++        String namespace = null;
++        String payload = null;
++
++        int pos = 0;
++        while (pos < data.length) {
++            final long[] tag = readVarint(data, pos);
++            pos = (int) tag[1];
++            final int field = (int) (tag[0] >>> 3);
++            final int wireType = (int) (tag[0] & 7);
++
++            switch (wireType) {
++                case WIRE_VARINT:
++                    pos = (int) readVarint(data, pos)[1]; // value not needed
++                    break;
++                case WIRE_FIXED64:
++                    pos = skip(data, pos, 8);
++                    break;
++                case WIRE_FIXED32:
++                    pos = skip(data, pos, 4);
++                    break;
++                case WIRE_LENGTH_DELIMITED:
++                    final long[] length = readVarint(data, pos);
++                    pos = (int) length[1];
++                    final int size = (int) length[0];
++                    if (length[0] < 0 || length[0] > data.length - pos) {
++                        throw new IOException("Truncated Cast message");
++                    }
++                    final String text = new String(data, pos, size, StandardCharsets.UTF_8);
++                    pos += size;
++                    if (field == FIELD_SOURCE_ID) {
++                        sourceId = text;
++                    } else if (field == FIELD_DESTINATION_ID) {
++                        destinationId = text;
++                    } else if (field == FIELD_NAMESPACE) {
++                        namespace = text;
++                    } else if (field == FIELD_PAYLOAD_UTF8) {
++                        payload = text;
++                    }
++                    // other fields (e.g. the binary payload) are ignored
++                    break;
++                default:
++                    throw new IOException("Unsupported protobuf wire type " + wireType);
++            }
++        }
++
++        if (sourceId == null || destinationId == null || namespace == null) {
++            throw new IOException("Incomplete Cast message");
++        }
++        return new CastMessage(sourceId, destinationId, namespace, payload);
++    }
++
++    private static void writeVarintField(final ByteArrayOutputStream out, final int tag,
++                                         final long value) {
++        out.write(tag);
++        writeVarint(out, value);
++    }
++
++    private static void writeStringField(final ByteArrayOutputStream out, final int tag,
++                                         final String value) {
++        final byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
++        out.write(tag);
++        writeVarint(out, bytes.length);
++        out.write(bytes, 0, bytes.length);
++    }
++
++    private static void writeVarint(final ByteArrayOutputStream out, final long value) {
++        long v = value;
++        while ((v & ~0x7FL) != 0) {
++            out.write((int) ((v & 0x7F) | 0x80));
++            v >>>= 7;
++        }
++        out.write((int) v);
++    }
++
++    /** @return {value, position after the varint} */
++    private static long[] readVarint(final byte[] data, final int start) throws IOException {
++        long result = 0;
++        int shift = 0;
++        int pos = start;
++        while (pos < data.length && shift < 64) {
++            final byte b = data[pos++];
++            result |= (long) (b & 0x7F) << shift;
++            if ((b & 0x80) == 0) {
++                return new long[] {result, pos};
++            }
++            shift += 7;
++        }
++        throw new IOException("Malformed varint in Cast message");
++    }
++
++    private static int skip(final byte[] data, final int pos, final int count)
++            throws IOException {
++        if (pos + count > data.length) {
++            throw new IOException("Truncated Cast message");
++        }
++        return pos + count;
++    }
++}
+diff --git a/app/src/main/java/org/schabi/newpipe/cast/CastTestDialog.java b/app/src/main/java/org/schabi/newpipe/cast/CastTestDialog.java
+new file mode 100644
+index 0000000..3b19108
+--- /dev/null
++++ b/app/src/main/java/org/schabi/newpipe/cast/CastTestDialog.java
+@@ -0,0 +1,99 @@
++package org.schabi.newpipe.cast;
++
++import android.app.Activity;
++import android.widget.ArrayAdapter;
++import android.widget.Toast;
++
++import androidx.appcompat.app.AlertDialog;
++
++import org.schabi.newpipe.R;
++
++import java.io.IOException;
++import java.util.ArrayList;
++import java.util.List;
++
++/**
++ * A temporary dialog to try the Chromecast sender: it lists the devices found on the network and
++ * plays a short test video on the chosen one. Errors are shown as they are, to help diagnose
++ * problems.
++ */
++public final class CastTestDialog {
++
++    private static final String TEST_VIDEO_URL =
++            "https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4";
++
++    private static final CastClient.Listener NO_OP_LISTENER = new CastClient.Listener() {
++        @Override
++        public void onMediaStatus(final CastClient.MediaStatus status) {
++        }
++
++        @Override
++        public void onClosed(final IOException reason) {
++        }
++    };
++
++    private static CastClient activeClient;
++
++    private CastTestDialog() {
++    }
++
++    public static void show(final Activity activity) {
++        final List<CastDiscovery.Device> devices = new ArrayList<>();
++        final ArrayAdapter<String> adapter =
++                new ArrayAdapter<>(activity, android.R.layout.simple_list_item_1);
++
++        final CastDiscovery discovery = new CastDiscovery(activity, found -> {
++            devices.clear();
++            devices.addAll(found);
++            adapter.clear();
++            for (final CastDiscovery.Device device : found) {
++                adapter.add(device.name);
++            }
++            adapter.notifyDataSetChanged();
++        });
++
++        final AlertDialog dialog = new AlertDialog.Builder(activity)
++                .setTitle(R.string.cast_test_title)
++                .setAdapter(adapter, (d, which) -> startTest(activity, devices.get(which)))
++                .setNeutralButton(R.string.cast_test_stop,
++                        (d, which) -> new Thread(CastTestDialog::stopActive, "cast-stop").start())
++                .setNegativeButton(android.R.string.cancel, null)
++                .create();
++        dialog.setOnDismissListener(d -> discovery.stop());
++        discovery.start();
++        dialog.show();
++    }
++
++    private static void startTest(final Activity activity, final CastDiscovery.Device device) {
++        new Thread(() -> {
++            try {
++                stopActive();
++                final CastClient client =
++                        CastClient.connect(device.host, device.port, NO_OP_LISTENER);
++                setActive(client);
++                client.launchDefaultReceiver();
++                client.load(TEST_VIDEO_URL, "video/mp4", true, 0);
++                toast(activity, activity.getString(R.string.cast_test_started, device.name));
++            } catch (final IOException e) {
++                stopActive();
++                toast(activity, activity.getString(R.string.cast_test_failed, e.toString()));
++            }
++        }, "cast-test").start();
++    }
++
++    private static synchronized void setActive(final CastClient client) {
++        activeClient = client;
++    }
++
++    private static synchronized void stopActive() {
++        if (activeClient != null) {
++            activeClient.stopReceiver();
++            activeClient.close();
++            activeClient = null;
++        }
++    }
++
++    private static void toast(final Activity activity, final String message) {
++        activity.runOnUiThread(() -> Toast.makeText(activity, message, Toast.LENGTH_LONG).show());
++    }
++}
+diff --git a/app/src/main/res/values-it/strings.xml b/app/src/main/res/values-it/strings.xml
+index 2f64df3..12e271b 100644
+--- a/app/src/main/res/values-it/strings.xml
++++ b/app/src/main/res/values-it/strings.xml
+@@ -173,6 +173,10 @@
+     <string name="show_hold_to_append_summary">Nei dettagli dei video, mostra un suggerimento alla pressione dei pulsanti per la riproduzione popup o in sottofondo</string>
+     <string name="play_all">Riproduci tutto</string>
+     <string name="continue_playlist">Continua</string>
++    <string name="cast_test_title">Test Cast</string>
++    <string name="cast_test_stop">Ferma</string>
++    <string name="cast_test_started">Riproduzione su %1$s</string>
++    <string name="cast_test_failed">Errore Cast: %1$s</string>
+     <string name="player_stream_failure">Impossibile riprodurre questo flusso</string>
+     <string name="player_unrecoverable_failure">Si è verificato un errore irreversibile del lettore multimediale</string>
+     <string name="player_recoverable_failure">Ripristino dell\'errore del lettore multimediale</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index f6ea047..e15a667 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -191,6 +191,10 @@
+     <string name="file_deleted">File deleted</string>
+     <string name="play_all">Play All</string>
+     <string name="continue_playlist">Continue</string>
++    <string name="cast_test_title">Cast test</string>
++    <string name="cast_test_stop">Stop</string>
++    <string name="cast_test_started">Playing on %1$s</string>
++    <string name="cast_test_failed">Cast error: %1$s</string>
+     <string name="always">Always</string>
+     <string name="just_once">Just Once</string>
+     <string name="file">File</string>
