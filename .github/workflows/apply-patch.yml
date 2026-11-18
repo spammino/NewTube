@@ -9,7 +9,15 @@ jobs:
       - uses: actions/checkout@v6
       - run: |
           for f in *.patch; do
-            git apply "$f"
+            if git apply --check "$f" 2>/dev/null; then
+              git apply "$f"
+              echo "Applied $f"
+            elif git apply --check -R "$f" 2>/dev/null; then
+              echo "Already applied, skipping $f"
+            else
+              echo "Cannot apply $f"
+              exit 1
+            fi
             rm "$f"
           done
           git config user.name "patch-bot"
