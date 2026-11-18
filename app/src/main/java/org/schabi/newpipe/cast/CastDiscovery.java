@@ -43,7 +43,11 @@ public final class CastDiscovery {
     }
 
     public interface Listener {
-        /** The list of the devices found so far changed. */
+        /**
+         * The list of the devices found so far changed.
+         *
+         * @param devices all the devices currently known
+         */
         void onDevicesChanged(List<Device> devices);
     }
 

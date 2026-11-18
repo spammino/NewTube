@@ -134,7 +134,13 @@ final class CastMessage {
         out.write((int) v);
     }
 
-    /** @return {value, position after the varint} */
+    /**
+     * Reads a varint.
+     *
+     * @param data  the bytes to read from
+     * @param start where the varint begins
+     * @return {value, position after the varint}
+     */
     private static long[] readVarint(final byte[] data, final int start) throws IOException {
         long result = 0;
         int shift = 0;

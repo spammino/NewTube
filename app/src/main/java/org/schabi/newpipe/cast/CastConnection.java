@@ -49,7 +49,11 @@ final class CastConnection implements Closeable {
     private static final int MAX_MESSAGE_SIZE = 1 << 20;
 
     interface Listener {
-        /** A non-heartbeat message arrived. Called on the reader thread. */
+        /**
+         * A non-heartbeat message arrived. Called on the reader thread.
+         *
+         * @param message the message
+         */
         void onMessage(CastMessage message);
 
         /**
@@ -83,6 +87,11 @@ final class CastConnection implements Closeable {
     /**
      * Opens a connection. Blocks, so it must not be called on the main thread.
      * Only addresses of the local network are accepted.
+     *
+     * @param host     the address of the Chromecast
+     * @param port     the port of the Chromecast
+     * @param listener receives the messages and the end of the connection
+     * @return the open connection
      */
     static CastConnection open(final String host, final int port, final Listener listener)
             throws IOException {
@@ -119,7 +128,14 @@ final class CastConnection implements Closeable {
                 TimeUnit.MILLISECONDS);
     }
 
-    /** Sends a message with a JSON payload. */
+    /**
+     * Sends a message with a JSON payload.
+     *
+     * @param sourceId      who sends the message
+     * @param destinationId who should receive it
+     * @param namespace     the protocol namespace of the message
+     * @param payload       the content of the message
+     */
     void send(final String sourceId, final String destinationId, final String namespace,
               final JSONObject payload) throws IOException {
         final byte[] data =
@@ -208,7 +224,13 @@ final class CastConnection implements Closeable {
         }
     }
 
-    /** Loopback, private (192.168.x.x, 10.x.x.x, 172.16-31.x.x) and link-local addresses. */
+    /**
+     * Tells whether an address belongs to the local network: loopback, private
+     * (192.168.x.x, 10.x.x.x, 172.16-31.x.x) and link-local addresses.
+     *
+     * @param address the address to check
+     * @return true if the address is a local one
+     */
     static boolean isLocalAddress(final InetAddress address) {
         if (address.isLoopbackAddress() || address.isSiteLocalAddress()
                 || address.isLinkLocalAddress()) {
@@ -223,6 +245,8 @@ final class CastConnection implements Closeable {
      * The Chromecast presents a self-signed device certificate, which cannot be checked like the
      * one of a website. This is why the connection is restricted to local addresses (see
      * {@link #isLocalAddress}) and why nothing sensitive is ever sent over it.
+     *
+     * @return a context that accepts any certificate
      */
     private static SSLContext createTrustAllContext() throws GeneralSecurityException {
         final TrustManager trustAll = new X509TrustManager() {

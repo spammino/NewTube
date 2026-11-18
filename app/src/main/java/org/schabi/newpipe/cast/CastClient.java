@@ -61,10 +61,18 @@ public final class CastClient implements Closeable {
     }
 
     public interface Listener {
-        /** Called on the reader thread whenever the Chromecast reports a playback change. */
+        /**
+         * Called on the reader thread whenever the Chromecast reports a playback change.
+         *
+         * @param status the new state of the playback
+         */
         void onMediaStatus(MediaStatus status);
 
-        /** Called once when the connection ends; {@code reason} is null if closed locally. */
+        /**
+         * Called once when the connection ends.
+         *
+         * @param reason why it ended, or {@code null} if it was closed locally
+         */
         void onClosed(IOException reason);
     }
 
@@ -84,7 +92,14 @@ public final class CastClient implements Closeable {
         this.listener = listener;
     }
 
-    /** Connects to a Chromecast. The address must be one of the local network. */
+    /**
+     * Connects to a Chromecast. The address must be one of the local network.
+     *
+     * @param host     the address of the Chromecast
+     * @param port     the port of the Chromecast, usually 8009
+     * @param listener receives the playback updates
+     * @return the connected client
+     */
     public static CastClient connect(final String host, final int port, final Listener listener)
             throws IOException {
         final CastClient client = new CastClient(listener);
@@ -120,7 +135,8 @@ public final class CastClient implements Closeable {
             final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(
                     LAUNCH_TIMEOUT_MS);
             while (transportId == null) {
-                final long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+                final long remainingMs =
+                        TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
                 if (remainingMs <= 0 || closed) {
                     throw new IOException("The Chromecast did not start the media receiver");
                 }
@@ -184,7 +200,11 @@ public final class CastClient implements Closeable {
         mediaRequest("STOP", null);
     }
 
-    /** Sets the volume of the Chromecast, from 0.0 to 1.0. */
+    /**
+     * Sets the volume of the Chromecast.
+     *
+     * @param level the volume, from 0.0 to 1.0
+     */
     public void setVolume(final double level) throws IOException {
         request(CastConnection.PLATFORM_ID, CastConnection.NS_RECEIVER,
                 json("type", "SET_VOLUME", "volume", json("level", level)), REQUEST_TIMEOUT_MS);
@@ -235,7 +255,15 @@ public final class CastClient implements Closeable {
         request(transport, CastConnection.NS_MEDIA, payload, REQUEST_TIMEOUT_MS);
     }
 
-    /** Sends a request and waits for the answer that has the same request id. */
+    /**
+     * Sends a request and waits for the answer that has the same request id.
+     *
+     * @param destinationId where the request goes (the platform or the media receiver)
+     * @param namespace     the protocol namespace of the request
+     * @param payload       the request, to which the request id is added
+     * @param timeoutMs     how long to wait for the answer
+     * @return the answer of the Chromecast
+     */
     private JSONObject request(final String destinationId, final String namespace,
                                final JSONObject payload, final long timeoutMs)
             throws IOException {
@@ -373,7 +401,12 @@ public final class CastClient implements Closeable {
         listener.onClosed(reason);
     }
 
-    /** Builds a JSON object from alternating keys and values. */
+    /**
+     * Builds a JSON object from alternating keys and values.
+     *
+     * @param keysAndValues key1, value1, key2, value2...
+     * @return the JSON object
+     */
     private static JSONObject json(final Object... keysAndValues) {
         final JSONObject object = new JSONObject();
         for (int i = 0; i < keysAndValues.length; i += 2) {
