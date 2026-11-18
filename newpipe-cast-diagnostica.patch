@@ -1,0 +1,119 @@
+diff --git a/app/src/main/java/org/schabi/newpipe/cast/CastTestDialog.java b/app/src/main/java/org/schabi/newpipe/cast/CastTestDialog.java
+index 3b19108..cc52493 100644
+--- a/app/src/main/java/org/schabi/newpipe/cast/CastTestDialog.java
++++ b/app/src/main/java/org/schabi/newpipe/cast/CastTestDialog.java
+@@ -14,22 +14,15 @@ import java.util.List;
+ 
+ /**
+  * A temporary dialog to try the Chromecast sender: it lists the devices found on the network and
+- * plays a short test video on the chosen one. Errors are shown as they are, to help diagnose
+- * problems.
++ * plays a short test video on the chosen one. What the Chromecast reports is shown as it is, to
++ * help diagnose problems.
+  */
+ public final class CastTestDialog {
+ 
+-    private static final String TEST_VIDEO_URL =
+-            "https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4";
+-
+-    private static final CastClient.Listener NO_OP_LISTENER = new CastClient.Listener() {
+-        @Override
+-        public void onMediaStatus(final CastClient.MediaStatus status) {
+-        }
+-
+-        @Override
+-        public void onClosed(final IOException reason) {
+-        }
++    private static final String[] VIDEO_NAMES = {"Blender (https)", "Google (http)"};
++    private static final String[] VIDEO_URLS = {
++            "https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4",
++            "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+     };
+ 
+     private static CastClient activeClient;
+@@ -54,7 +47,7 @@ public final class CastTestDialog {
+ 
+         final AlertDialog dialog = new AlertDialog.Builder(activity)
+                 .setTitle(R.string.cast_test_title)
+-                .setAdapter(adapter, (d, which) -> startTest(activity, devices.get(which)))
++                .setAdapter(adapter, (d, which) -> chooseVideo(activity, devices.get(which)))
+                 .setNeutralButton(R.string.cast_test_stop,
+                         (d, which) -> new Thread(CastTestDialog::stopActive, "cast-stop").start())
+                 .setNegativeButton(android.R.string.cancel, null)
+@@ -64,16 +57,47 @@ public final class CastTestDialog {
+         dialog.show();
+     }
+ 
+-    private static void startTest(final Activity activity, final CastDiscovery.Device device) {
++    private static void chooseVideo(final Activity activity, final CastDiscovery.Device device) {
++        new AlertDialog.Builder(activity)
++                .setTitle(device.name)
++                .setItems(VIDEO_NAMES,
++                        (d, which) -> startTest(activity, device, VIDEO_URLS[which]))
++                .show();
++    }
++
++    private static void startTest(final Activity activity, final CastDiscovery.Device device,
++                                  final String videoUrl) {
++        final CastClient.Listener listener = new CastClient.Listener() {
++            private String lastShown = "";
++
++            @Override
++            public void onMediaStatus(final CastClient.MediaStatus status) {
++                final String text = status.toString();
++                if (!text.equals(lastShown)) {
++                    lastShown = text;
++                    toast(activity, activity.getString(R.string.cast_test_status, text));
++                }
++            }
++
++            @Override
++            public void onClosed(final IOException reason) {
++                if (reason != null) {
++                    toast(activity, activity.getString(R.string.cast_test_failed,
++                            reason.toString()));
++                }
++            }
++        };
++
+         new Thread(() -> {
+             try {
+                 stopActive();
+-                final CastClient client =
+-                        CastClient.connect(device.host, device.port, NO_OP_LISTENER);
++                final CastClient client = CastClient.connect(device.host, device.port, listener);
+                 setActive(client);
+                 client.launchDefaultReceiver();
+-                client.load(TEST_VIDEO_URL, "video/mp4", true, 0);
+-                toast(activity, activity.getString(R.string.cast_test_started, device.name));
++                final CastClient.MediaStatus first =
++                        client.load(videoUrl, "video/mp4", true, 0);
++                toast(activity, activity.getString(R.string.cast_test_started, device.name
++                        + (first == null ? "" : " (" + first + ")")));
+             } catch (final IOException e) {
+                 stopActive();
+                 toast(activity, activity.getString(R.string.cast_test_failed, e.toString()));
+diff --git a/app/src/main/res/values-it/strings.xml b/app/src/main/res/values-it/strings.xml
+index 12e271b..69130cc 100644
+--- a/app/src/main/res/values-it/strings.xml
++++ b/app/src/main/res/values-it/strings.xml
+@@ -177,6 +177,7 @@
+     <string name="cast_test_stop">Ferma</string>
+     <string name="cast_test_started">Riproduzione su %1$s</string>
+     <string name="cast_test_failed">Errore Cast: %1$s</string>
++    <string name="cast_test_status">Chromecast: %1$s</string>
+     <string name="player_stream_failure">Impossibile riprodurre questo flusso</string>
+     <string name="player_unrecoverable_failure">Si è verificato un errore irreversibile del lettore multimediale</string>
+     <string name="player_recoverable_failure">Ripristino dell\'errore del lettore multimediale</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index e15a667..2ee5bb9 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -195,6 +195,7 @@
+     <string name="cast_test_stop">Stop</string>
+     <string name="cast_test_started">Playing on %1$s</string>
+     <string name="cast_test_failed">Cast error: %1$s</string>
++    <string name="cast_test_status">Chromecast: %1$s</string>
+     <string name="always">Always</string>
+     <string name="just_once">Just Once</string>
+     <string name="file">File</string>
