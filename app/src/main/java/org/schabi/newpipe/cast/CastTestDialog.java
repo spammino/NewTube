@@ -14,22 +14,15 @@ import java.util.List;
 
 /**
  * A temporary dialog to try the Chromecast sender: it lists the devices found on the network and
- * plays a short test video on the chosen one. Errors are shown as they are, to help diagnose
- * problems.
+ * plays a short test video on the chosen one. What the Chromecast reports is shown as it is, to
+ * help diagnose problems.
  */
 public final class CastTestDialog {
 
-    private static final String TEST_VIDEO_URL =
-            "https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4";
-
-    private static final CastClient.Listener NO_OP_LISTENER = new CastClient.Listener() {
-        @Override
-        public void onMediaStatus(final CastClient.MediaStatus status) {
-        }
-
-        @Override
-        public void onClosed(final IOException reason) {
-        }
+    private static final String[] VIDEO_NAMES = {"Blender (https)", "Google (http)"};
+    private static final String[] VIDEO_URLS = {
+            "https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4",
+            "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
     };
 
     private static CastClient activeClient;
@@ -54,7 +47,7 @@ public final class CastTestDialog {
 
         final AlertDialog dialog = new AlertDialog.Builder(activity)
                 .setTitle(R.string.cast_test_title)
-                .setAdapter(adapter, (d, which) -> startTest(activity, devices.get(which)))
+                .setAdapter(adapter, (d, which) -> chooseVideo(activity, devices.get(which)))
                 .setNeutralButton(R.string.cast_test_stop,
                         (d, which) -> new Thread(CastTestDialog::stopActive, "cast-stop").start())
                 .setNegativeButton(android.R.string.cancel, null)
@@ -64,16 +57,47 @@ public final class CastTestDialog {
         dialog.show();
     }
 
-    private static void startTest(final Activity activity, final CastDiscovery.Device device) {
+    private static void chooseVideo(final Activity activity, final CastDiscovery.Device device) {
+        new AlertDialog.Builder(activity)
+                .setTitle(device.name)
+                .setItems(VIDEO_NAMES,
+                        (d, which) -> startTest(activity, device, VIDEO_URLS[which]))
+                .show();
+    }
+
+    private static void startTest(final Activity activity, final CastDiscovery.Device device,
+                                  final String videoUrl) {
+        final CastClient.Listener listener = new CastClient.Listener() {
+            private String lastShown = "";
+
+            @Override
+            public void onMediaStatus(final CastClient.MediaStatus status) {
+                final String text = status.toString();
+                if (!text.equals(lastShown)) {
+                    lastShown = text;
+                    toast(activity, activity.getString(R.string.cast_test_status, text));
+                }
+            }
+
+            @Override
+            public void onClosed(final IOException reason) {
+                if (reason != null) {
+                    toast(activity, activity.getString(R.string.cast_test_failed,
+                            reason.toString()));
+                }
+            }
+        };
+
         new Thread(() -> {
             try {
                 stopActive();
-                final CastClient client =
-                        CastClient.connect(device.host, device.port, NO_OP_LISTENER);
+                final CastClient client = CastClient.connect(device.host, device.port, listener);
                 setActive(client);
                 client.launchDefaultReceiver();
-                client.load(TEST_VIDEO_URL, "video/mp4", true, 0);
-                toast(activity, activity.getString(R.string.cast_test_started, device.name));
+                final CastClient.MediaStatus first =
+                        client.load(videoUrl, "video/mp4", true, 0);
+                toast(activity, activity.getString(R.string.cast_test_started, device.name
+                        + (first == null ? "" : " (" + first + ")")));
             } catch (final IOException e) {
                 stopActive();
                 toast(activity, activity.getString(R.string.cast_test_failed, e.toString()));

@@ -195,6 +195,7 @@
     <string name="cast_test_stop">Stop</string>
     <string name="cast_test_started">Playing on %1$s</string>
     <string name="cast_test_failed">Cast error: %1$s</string>
+    <string name="cast_test_status">Chromecast: %1$s</string>
     <string name="always">Always</string>
     <string name="just_once">Just Once</string>
     <string name="file">File</string>
