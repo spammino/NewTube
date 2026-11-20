@@ -6,6 +6,7 @@ import org.json.JSONObject;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -156,6 +157,16 @@ public final class CastClient implements Closeable {
             throw e;
         }
         return client;
+    }
+
+    /**
+     * Returns the address of the phone on the network of the Chromecast, which is the address
+     * that the Chromecast can use to reach the phone.
+     *
+     * @return the local address of the connection
+     */
+    public InetAddress getLocalAddress() {
+        return connection.getLocalAddress();
     }
 
     /** Starts the Default Media Receiver and connects to it. */

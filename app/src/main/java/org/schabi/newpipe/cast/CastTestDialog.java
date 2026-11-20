@@ -23,24 +23,22 @@ import java.util.List;
 public final class CastTestDialog {
 
     private static final String[] TEST_NAMES = {
-            "Google (http) - base",
-            "Google (http) - completo",
-            "Blender (https) - base",
-            "Blender (https) - completo"
+            "Blender via telefono",
+            "Google via telefono",
+            "Google diretto (http)"
     };
     private static final String[] TEST_URLS = {
-            "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-            "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
             "https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4",
-            "https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4"
+            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+            "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
     };
-    /** In the "completo" tests the messages carry the extra fields other senders send. */
-    private static final boolean[] TEST_RICH = {false, true, false, true};
+    /** Whether the video goes through the small server of the phone or is given directly. */
+    private static final boolean[] TEST_VIA_PHONE = {true, true, false};
 
     private static final long LOG_DELAY_MS = 6000;
-    private static final long RICH_LOAD_DELAY_MS = 1500;
 
     private static CastClient activeClient;
+    private static CastProxyServer activeProxy;
 
     private CastTestDialog() {
     }
@@ -110,23 +108,21 @@ public final class CastTestDialog {
             try {
                 stopActive();
                 final CastClient client = CastClient.connect(device.host, device.port, listener,
-                        logger, TEST_RICH[test]);
-                setActive(client);
+                        logger, false);
+                final CastProxyServer proxy = TEST_VIA_PHONE[test]
+                        ? CastProxyServer.start(TEST_URLS[test], logger) : null;
+                setActive(client, proxy);
                 client.launchDefaultReceiver();
-                if (TEST_RICH[test]) {
-                    Thread.sleep(RICH_LOAD_DELAY_MS);
-                }
-                final CastClient.MediaStatus first =
-                        client.load(TEST_URLS[test], "video/mp4", true, 0);
+                final String url = proxy == null ? TEST_URLS[test]
+                        : proxy.getUrl(client.getLocalAddress());
+                trace.append("Address given to the Chromecast: ").append(url).append("\n\n");
+                final CastClient.MediaStatus first = client.load(url, "video/mp4", true, 0);
                 toast(activity, activity.getString(R.string.cast_test_started, device.name
                         + (first == null ? "" : " (" + first + ")")));
             } catch (final IOException e) {
                 trace.append("ERROR: ").append(e).append("\n\n");
                 stopActive();
                 toast(activity, activity.getString(R.string.cast_test_failed, e.toString()));
-            } catch (final InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
             }
 
             try {
@@ -154,8 +150,10 @@ public final class CastTestDialog {
                 .show());
     }
 
-    private static synchronized void setActive(final CastClient client) {
+    private static synchronized void setActive(final CastClient client,
+                                               final CastProxyServer proxy) {
         activeClient = client;
+        activeProxy = proxy;
     }
 
     private static synchronized void stopActive() {
@@ -163,6 +161,10 @@ public final class CastTestDialog {
             activeClient.stopReceiver();
             activeClient.close();
             activeClient = null;
+        }
+        if (activeProxy != null) {
+            activeProxy.stop();
+            activeProxy = null;
         }
     }
 

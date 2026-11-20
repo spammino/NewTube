@@ -150,6 +150,15 @@ final class CastConnection implements Closeable {
         }
     }
 
+    /**
+     * Returns the address of the phone on the network of the Chromecast.
+     *
+     * @return the local address of the connection
+     */
+    InetAddress getLocalAddress() {
+        return socket.getLocalAddress();
+    }
+
     @Override
     public void close() {
         shutdown(null);
