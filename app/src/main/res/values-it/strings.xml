@@ -178,6 +178,9 @@
     <string name="cast_test_started">Riproduzione su %1$s</string>
     <string name="cast_test_failed">Errore Cast: %1$s</string>
     <string name="cast_test_status">Chromecast: %1$s</string>
+    <string name="cast_test_log_title">Log Cast</string>
+    <string name="cast_test_copy">Copia</string>
+    <string name="cast_test_copied">Copiato</string>
     <string name="player_stream_failure">Impossibile riprodurre questo flusso</string>
     <string name="player_unrecoverable_failure">Si è verificato un errore irreversibile del lettore multimediale</string>
     <string name="player_recoverable_failure">Ripristino dell\'errore del lettore multimediale</string>

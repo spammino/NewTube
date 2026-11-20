@@ -76,12 +76,24 @@ public final class CastClient implements Closeable {
         void onClosed(IOException reason);
     }
 
+    /** Receives a readable trace of the messages exchanged with the Chromecast. */
+    public interface Logger {
+        /**
+         * Called for every message that is sent or received (except the heartbeat).
+         *
+         * @param line a one-line description of the message
+         */
+        void log(String line);
+    }
+
     private final Listener listener;
     private final AtomicInteger requestIds = new AtomicInteger(0);
     private final Map<Integer, BlockingQueue<JSONObject>> pending = new ConcurrentHashMap<>();
     private final Object applicationLock = new Object();
 
     private volatile CastConnection connection;
+    private volatile Logger logger;
+    private volatile boolean richMessages;
     private volatile boolean closed;
     private volatile int mediaSessionId = -1;
     // guarded by applicationLock
@@ -102,7 +114,26 @@ public final class CastClient implements Closeable {
      */
     public static CastClient connect(final String host, final int port, final Listener listener)
             throws IOException {
+        return connect(host, port, listener, null, false);
+    }
+
+    /**
+     * Connects to a Chromecast, with a trace of the messages.
+     *
+     * @param host         the address of the Chromecast
+     * @param port         the port of the Chromecast, usually 8009
+     * @param listener     receives the playback updates
+     * @param logger       receives a trace of the messages, may be null
+     * @param richMessages whether to send the same extra fields that other Cast senders send
+     *                     (a more detailed CONNECT, and empty metadata in LOAD)
+     * @return the connected client
+     */
+    public static CastClient connect(final String host, final int port, final Listener listener,
+                                     final Logger logger, final boolean richMessages)
+            throws IOException {
         final CastClient client = new CastClient(listener);
+        client.logger = logger;
+        client.richMessages = richMessages;
         client.connection = CastConnection.open(host, port, new CastConnection.Listener() {
             @Override
             public void onMessage(final CastMessage message) {
@@ -116,8 +147,10 @@ public final class CastClient implements Closeable {
         });
         try {
             // opens the "virtual connection" with the Chromecast itself
+            final JSONObject connect = client.connectMessage();
+            client.log("-> connection to " + CastConnection.PLATFORM_ID + " " + connect);
             client.connection.send(CastConnection.SENDER_ID, CastConnection.PLATFORM_ID,
-                    CastConnection.NS_CONNECTION, json("type", "CONNECT"));
+                    CastConnection.NS_CONNECTION, connect);
         } catch (final IOException e) {
             client.close();
             throw e;
@@ -149,8 +182,10 @@ public final class CastClient implements Closeable {
             }
             transport = transportId;
         }
+        final JSONObject connect = connectMessage();
+        log("-> connection to " + transport + " " + connect);
         connection.send(CastConnection.SENDER_ID, transport, CastConnection.NS_CONNECTION,
-                json("type", "CONNECT"));
+                connect);
     }
 
     /**
@@ -174,10 +209,14 @@ public final class CastClient implements Closeable {
         if (transport == null) {
             throw new IOException("The media receiver is not running");
         }
+        final JSONObject media = json("contentId", url, "contentType", contentType,
+                "streamType", "BUFFERED");
         final JSONObject payload = json("type", "LOAD", "sessionId", session,
-                "autoplay", autoplay, "currentTime", startSeconds,
-                "media", json("contentId", url, "contentType", contentType,
-                        "streamType", "BUFFERED"));
+                "autoplay", autoplay, "currentTime", startSeconds, "media", media);
+        if (richMessages) {
+            put(media, "metadata", new JSONObject());
+            put(payload, "customData", new JSONObject());
+        }
         final JSONObject response =
                 request(transport, CastConnection.NS_MEDIA, payload, LOAD_TIMEOUT_MS);
         return parseMediaStatus(response);
@@ -272,6 +311,7 @@ public final class CastClient implements Closeable {
         pending.put(id, answer);
         try {
             put(payload, "requestId", id);
+            log("-> " + shortName(namespace) + " to " + destinationId + " " + payload);
             connection.send(CastConnection.SENDER_ID, destinationId, namespace, payload);
             final JSONObject response = answer.poll(timeoutMs, TimeUnit.MILLISECONDS);
             if (response == null) {
@@ -306,6 +346,8 @@ public final class CastClient implements Closeable {
     }
 
     private void handleMessage(final CastMessage message) {
+        log("<- " + shortName(message.namespace) + " from " + message.sourceId + " "
+                + message.payload);
         final JSONObject json;
         try {
             json = new JSONObject(message.payload);
@@ -386,6 +428,29 @@ public final class CastClient implements Closeable {
                 status.optDouble("currentTime", 0),
                 media == null ? -1 : media.optDouble("duration", -1),
                 status.optString("idleReason"));
+    }
+
+    private JSONObject connectMessage() {
+        final JSONObject message = json("type", "CONNECT");
+        if (richMessages) {
+            put(message, "origin", new JSONObject());
+            put(message, "userAgent", "NewTube");
+            put(message, "senderInfo", json("sdkType", 2, "version", "15.605.1.3",
+                    "browserVersion", "44.0.2403.30", "platform", 4,
+                    "systemVersion", "Android", "connectionType", 1));
+        }
+        return message;
+    }
+
+    private void log(final String line) {
+        final Logger current = logger;
+        if (current != null) {
+            current.log(line);
+        }
+    }
+
+    private static String shortName(final String namespace) {
+        return namespace.substring(namespace.lastIndexOf('.') + 1);
     }
 
     private void handleClosed(final IOException reason) {
