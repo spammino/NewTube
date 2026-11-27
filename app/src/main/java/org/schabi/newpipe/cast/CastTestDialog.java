@@ -11,7 +11,9 @@ import androidx.appcompat.app.AlertDialog;
 
 import org.schabi.newpipe.R;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -22,20 +24,8 @@ import java.util.List;
  */
 public final class CastTestDialog {
 
-    private static final String[] TEST_NAMES = {
-            "Blender via telefono",
-            "Google via telefono",
-            "Google diretto (http)"
-    };
-    private static final String[] TEST_URLS = {
-            "https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4",
-            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-            "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
-    };
-    /** Whether the video goes through the small server of the phone or is given directly. */
-    private static final boolean[] TEST_VIA_PHONE = {true, true, false};
-
     private static final long LOG_DELAY_MS = 6000;
+    private static final int BUFFER_SIZE = 16 * 1024;
 
     private static CastClient activeClient;
     private static CastProxyServer activeProxy;
@@ -60,7 +50,7 @@ public final class CastTestDialog {
 
         final AlertDialog dialog = new AlertDialog.Builder(activity)
                 .setTitle(R.string.cast_test_title)
-                .setAdapter(adapter, (d, which) -> chooseTest(activity, devices.get(which)))
+                .setAdapter(adapter, (d, which) -> startTest(activity, devices.get(which)))
                 .setNeutralButton(R.string.cast_test_stop,
                         (d, which) -> new Thread(CastTestDialog::stopActive, "cast-stop").start())
                 .setNegativeButton(android.R.string.cancel, null)
@@ -70,21 +60,13 @@ public final class CastTestDialog {
         dialog.show();
     }
 
-    private static void chooseTest(final Activity activity, final CastDiscovery.Device device) {
-        new AlertDialog.Builder(activity)
-                .setTitle(device.name)
-                .setItems(TEST_NAMES, (d, which) -> startTest(activity, device, which))
-                .show();
-    }
-
-    private static void startTest(final Activity activity, final CastDiscovery.Device device,
-                                  final int test) {
+    private static void startTest(final Activity activity, final CastDiscovery.Device device) {
         final StringBuffer trace = new StringBuffer();
         final long start = System.currentTimeMillis();
         final CastClient.Logger logger = line -> trace.append('+')
                 .append(System.currentTimeMillis() - start).append("ms ")
                 .append(line).append("\n\n");
-        trace.append("Test: ").append(TEST_NAMES[test]).append("\n\n");
+        trace.append("Test: video inside the app, served by the phone\n\n");
 
         final CastClient.Listener listener = new CastClient.Listener() {
             private String lastShown = "";
@@ -109,12 +91,11 @@ public final class CastTestDialog {
                 stopActive();
                 final CastClient client = CastClient.connect(device.host, device.port, listener,
                         logger, false);
-                final CastProxyServer proxy = TEST_VIA_PHONE[test]
-                        ? CastProxyServer.start(TEST_URLS[test], logger) : null;
+                final CastProxyServer proxy =
+                        CastProxyServer.start(readTestVideo(activity), "video/mp4", logger);
                 setActive(client, proxy);
                 client.launchDefaultReceiver();
-                final String url = proxy == null ? TEST_URLS[test]
-                        : proxy.getUrl(client.getLocalAddress());
+                final String url = proxy.getUrl(client.getLocalAddress());
                 trace.append("Address given to the Chromecast: ").append(url).append("\n\n");
                 final CastClient.MediaStatus first = client.load(url, "video/mp4", true, 0);
                 toast(activity, activity.getString(R.string.cast_test_started, device.name
@@ -133,6 +114,19 @@ public final class CastTestDialog {
             }
             showTrace(activity, trace.toString());
         }, "cast-test").start();
+    }
+
+    private static byte[] readTestVideo(final Activity activity) throws IOException {
+        try (InputStream in = activity.getResources().openRawResource(R.raw.cast_test)) {
+            final ByteArrayOutputStream out = new ByteArrayOutputStream();
+            final byte[] buffer = new byte[BUFFER_SIZE];
+            int read = in.read(buffer);
+            while (read >= 0) {
+                out.write(buffer, 0, read);
+                read = in.read(buffer);
+            }
+            return out.toByteArray();
+        }
     }
 
     private static void showTrace(final Activity activity, final String trace) {
